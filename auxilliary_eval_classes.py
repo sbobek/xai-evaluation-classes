@@ -1335,33 +1335,5 @@ normal_train_scaled = scaler.transform(
 anomaly_train_scaled_pt = torch.tensor(anomaly_train_scaled, dtype=torch.float32)
 normal_train_scaled_pt = torch.tensor(normal_train_scaled, dtype=torch.float32)
 
-# There is some problem with loading the file, one need to upload it once again manually
-model_iris = IrisAutoencoder3()
-model_iris.load_state_dict(torch.load('serialised/Iris_contrastive_model_versicolor_v9_noise_improved.pht'))
-
-model_iris.eval()
-
-### 3. Test autoencoder, visualise losses and choose cutoff
-X_normal = normal_gauss_df.iloc[int(N / 2):][
-    ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-X_anomaly_1 = anomaly_1_gauss_df[
-    ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-X_anomaly_2 = anomaly_2_gauss_df[
-    ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-print(f"X_normal # = {len(X_normal)}")
-print(f"X_anomaly_1 # = {len(X_anomaly_1)}")
-print(f"X_anomaly_2 # = {len(X_anomaly_2)}")
-
-X_normal_scaled = scaler.transform(X_normal)
-X_anomaly_1_scaled = scaler.transform(X_anomaly_1)
-X_anomaly_2_scaled = scaler.transform(X_anomaly_2)
-
-X_normal_scaled_pt = torch.FloatTensor(X_normal_scaled)
-X_anomaly_1_scaled_pt = torch.FloatTensor(X_anomaly_1_scaled)
-X_anomaly_2_scaled_pt = torch.FloatTensor(X_anomaly_2_scaled)
-
-print_loss(X_normal_scaled_pt, model_iris, f"Norm= {NORMAL_CLASS}")
-print_loss(X_anomaly_1_scaled_pt, model_iris, f"Anomal1= {ANOMALY_CLASS_1}")
-print_loss(X_anomaly_2_scaled_pt, model_iris, f"Anomal2= {ANOMALY_CLASS_2}")
 
 ## 15/12/2023 12:50 ###

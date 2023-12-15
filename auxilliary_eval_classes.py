@@ -1,5 +1,5 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 np.int = int  # Fix deprecated
 
@@ -7,9 +7,8 @@ import pickle
 from joblib import load
 import dill
 
-from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.tree import _tree, DecisionTreeClassifier, plot_tree
+from sklearn.tree import _tree, DecisionTreeClassifier
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
@@ -23,8 +22,6 @@ from scipy.spatial import distance
 import torch
 from torch import nn
 
-from IPython.display import SVG
-
 from typing import Iterator, Optional
 import random
 
@@ -32,16 +29,13 @@ from collections import Counter
 
 import shap
 
-import io
-
 from typing import Callable, List, Tuple, Union
 
-from itertools import combinations
 from lime.lime_tabular import LimeTabularExplainer
-
 
 ## AUXILIARY ###
 DATA_DIRECTORY = '/serialised'
+
 
 def save_to_pickle(obj, filename, directory=DATA_DIRECTORY):
     """
@@ -172,7 +166,7 @@ def get_losses(X_tensor: torch.Tensor, model: nn.Module, label: str = '') -> Tup
 ## CLASSIFIER ###
 
 def find_best_threshold(losses_normal: List[float], losses_anomaly_1: List[float], normal_label: str,
-                        anomaly_label: str) -> float:
+                        anomaly_label: str, do_plot: bool = True) -> float:
     # Create histograms for both distributions
     hist_normal, bins_normal = np.histogram(losses_normal, bins=100, density=True)
     hist_anomaly_1, bins_anomaly_1 = np.histogram(losses_anomaly_1, bins=100, density=True)
@@ -190,16 +184,17 @@ def find_best_threshold(losses_normal: List[float], losses_anomaly_1: List[float
             best_threshold = threshold
 
     # Visualization using the provided plot code
-    plt.figure(figsize=(12, 8))
-    plt.hist(losses_normal, bins=30, label=normal_label)
-    plt.hist(losses_anomaly_1, bins=30, label=anomaly_label)
-    plt.axvline(best_threshold, color='r', linestyle='dashed', linewidth=2,
-                label=f'Best Threshold: {best_threshold:.2f}')
-    plt.title('Distribution of Losses')
-    plt.xlabel('Loss')
-    plt.ylabel('Frequency')
-    plt.legend()  # Display the labels
-    plt.show()
+    if do_plot:
+        plt.figure(figsize=(12, 8))
+        plt.hist(losses_normal, bins=30, label=normal_label)
+        plt.hist(losses_anomaly_1, bins=30, label=anomaly_label)
+        plt.axvline(best_threshold, color='r', linestyle='dashed', linewidth=2,
+                    label=f'Best Threshold: {best_threshold:.2f}')
+        plt.title('Distribution of Losses')
+        plt.xlabel('Loss')
+        plt.ylabel('Frequency')
+        plt.legend()  # Display the labels
+        plt.show()
 
     return best_threshold
 

@@ -7,38 +7,20 @@ import pickle
 from joblib import load
 import dill
 
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.tree import _tree, DecisionTreeClassifier
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import IsolationForest
 
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-
-from scipy.stats import kruskal, kstest, shapiro, skewnorm
-from scipy.spatial import distance
+from scipy.stats import kstest, shapiro, skewnorm
 
 import torch
 from torch import nn
 
-from typing import Iterator, Optional
-import random
-
-from collections import Counter
-
-import shap
+from typing import Optional
 
 from typing import Callable, List, Tuple, Union
 
-from lime.lime_tabular import LimeTabularExplainer
 from sklearn import datasets
 import matplotlib.pyplot as plt
-import seaborn as sns
-
-import copy
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import roc_curve, auc
 
 ## AUXILIARY ###
 DATA_DIRECTORY = '/serialised'
@@ -243,11 +225,12 @@ class AnomalyClassifier(BaseEstimator, ClassifierMixin):
                  autoencoder_model: torch.nn.Module,
                  get_losses: Callable[[Union[np.ndarray, torch.Tensor, pd.DataFrame], torch.nn.Module], List[float]],
                  loss_threshold: float,
-                 a_scaler) -> None:
+                 scaler) -> None:
         self.autoencoder_model = autoencoder_model
         self.get_losses = get_losses
         self.loss_threshold = loss_threshold
-        self.scaler = a_scaler
+        self.scaler = scaler
+        self.a_scaler = None
         self.losses_normal = None
         self.skew_params = None
         self.ks_statistic = None
@@ -346,8 +329,6 @@ class AnomalyClassifier(BaseEstimator, ClassifierMixin):
         return np.array(probas)
 
 
-
-
 ########################################################################################################################
 ## LOAD IRIS ###
 iris = datasets.load_iris()
@@ -369,7 +350,6 @@ ANOMALY_CLASS_1 = ANOMALY_CLASSES[0]
 ANOMALY_CLASS_2 = ANOMALY_CLASSES[1]
 print(f"ANOMALY_CLASS_1 is {ANOMALY_CLASS_1}")
 print(f"ANOMALY_CLASS_2 is {ANOMALY_CLASS_2}")
-
 
 N = 1_000
 np.random.seed(2023)
@@ -437,41 +417,15 @@ anomaly_train_scaled_pt = torch.tensor(anomaly_train_scaled, dtype=torch.float32
 normal_train_scaled_pt = torch.tensor(normal_train_scaled, dtype=torch.float32)
 
 ### 3. Test autoencoder, visualise losses and choose cutoff
-X_normal = normal_gauss_df.iloc[int(N / 2):][
+X_normal_test_df = normal_gauss_df.iloc[int(N / 2):][
     ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-X_anomaly_1 = anomaly_1_gauss_df[
+X_anomaly_1_test_df = anomaly_1_gauss_df[
     ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-X_anomaly_2 = anomaly_2_gauss_df[
+X_anomaly_2_test_df = anomaly_2_gauss_df[
     ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-print(f"X_normal # = {len(X_normal)}")
-print(f"X_anomaly_1 # = {len(X_anomaly_1)}")
-print(f"X_anomaly_2 # = {len(X_anomaly_2)}")
-
-X_normal_scaled = scaler.transform(X_normal)
-X_anomaly_1_scaled = scaler.transform(X_anomaly_1)
-X_anomaly_2_scaled = scaler.transform(X_anomaly_2)
-
-X_normal_scaled_pt = torch.FloatTensor(X_normal_scaled)
-X_anomaly_1_scaled_pt = torch.FloatTensor(X_anomaly_1_scaled)
-X_anomaly_2_scaled_pt = torch.FloatTensor(X_anomaly_2_scaled)
-
-X_normal = normal_gauss_df.iloc[int(N / 2):][
-    ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-X_anomaly_1 = anomaly_1_gauss_df[
-    ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-X_anomaly_2 = anomaly_2_gauss_df[
-    ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']].to_numpy()
-print(f"X_normal # = {len(X_normal)}")
-print(f"X_anomaly_1 # = {len(X_anomaly_1)}")
-print(f"X_anomaly_2 # = {len(X_anomaly_2)}")
-
-X_normal_scaled = scaler.transform(X_normal)
-X_anomaly_1_scaled = scaler.transform(X_anomaly_1)
-X_anomaly_2_scaled = scaler.transform(X_anomaly_2)
-
-X_normal_scaled_pt = torch.FloatTensor(X_normal_scaled)
-X_anomaly_1_scaled_pt = torch.FloatTensor(X_anomaly_1_scaled)
-X_anomaly_2_scaled_pt = torch.FloatTensor(X_anomaly_2_scaled)
+print(f"X_normal # = {len(X_normal_test_df)}")
+print(f"X_anomaly_1 # = {len(X_anomaly_1_test_df)}")
+print(f"X_anomaly_2 # = {len(X_anomaly_2_test_df)}")
 
 
-## 15/12/2023 13:21 ###
+## 16/12/2023 20:51 ###

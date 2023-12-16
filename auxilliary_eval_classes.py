@@ -230,7 +230,7 @@ class AnomalyClassifier(BaseEstimator, ClassifierMixin):
         self.get_losses = get_losses
         self.loss_threshold = loss_threshold
         self.scaler = scaler
-        self.a_scaler = None
+        # self.a_scaler = None
         self.losses_normal = None
         self.skew_params = None
         self.ks_statistic = None
@@ -428,4 +428,4 @@ print(f"X_anomaly_1 # = {len(X_anomaly_1_test_df)}")
 print(f"X_anomaly_2 # = {len(X_anomaly_2_test_df)}")
 
 
-## 16/12/2023 20:51 ###
+## 16/12/2023 20:53 ###

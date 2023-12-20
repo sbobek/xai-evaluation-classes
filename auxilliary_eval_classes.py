@@ -225,12 +225,11 @@ class AnomalyClassifier(BaseEstimator, ClassifierMixin):
                  autoencoder_model: torch.nn.Module,
                  get_losses: Callable[[Union[np.ndarray, torch.Tensor, pd.DataFrame], torch.nn.Module], List[float]],
                  loss_threshold: float,
-                 scaler) -> None:
+                 scaler:StandardScaler) -> None:
         self.autoencoder_model = autoencoder_model
         self.get_losses = get_losses
         self.loss_threshold = loss_threshold
         self.scaler = scaler
-        # self.a_scaler = None
         self.losses_normal = None
         self.skew_params = None
         self.ks_statistic = None

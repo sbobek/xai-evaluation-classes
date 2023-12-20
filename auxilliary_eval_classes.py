@@ -133,7 +133,7 @@ def print_loss(X_tensor: torch.Tensor, model: nn.Module, label: str = '') -> Non
     print(f"[{label}] test Loss= {loss.item()}")
 
 
-def get_losses_impl(X_tensor: torch.Tensor, model: nn.Module, label: str = '') -> Tuple[List[float], float]:
+def get_losses_impl(X_tensor: torch.Tensor, model: nn.Module, label: str = '', do_print: bool = False) -> Tuple[List[float], float]:
     losses = []
     _criterion = nn.MSELoss()
     with torch.no_grad():
@@ -144,10 +144,11 @@ def get_losses_impl(X_tensor: torch.Tensor, model: nn.Module, label: str = '') -
 
     # Choose a cutoff value
     cutoff = sum(losses) / len(losses)
-    if label:
-        print("[", label, '] Cutoff Loss:', cutoff)
-    else:
-        print('Cutoff Loss:', cutoff)
+    if do_print:
+        if label:
+            print("[", label, '] Cutoff Loss:', cutoff)
+        else:
+            print('Cutoff Loss:', cutoff)
 
     return losses, cutoff
 

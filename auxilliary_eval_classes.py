@@ -1,26 +1,27 @@
+import hashlib
+import os
+import pickle
+import random
+from itertools import combinations
+from typing import Any, Callable, List, Dict
+from typing import Optional
+from typing import Tuple, Union
+
+import dill
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-np.int = int  # Fix deprecated
-
-import pickle
+import torch
 from joblib import load
-import dill
-
+from scipy.spatial.distance import euclidean
+from scipy.stats import kstest, shapiro, skewnorm
+from sklearn import datasets
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.preprocessing import StandardScaler
-
-from scipy.stats import kstest, shapiro, skewnorm
-
-import torch
 from torch import nn
+from tqdm.notebook import tqdm
 
-from typing import Optional
-
-from typing import Callable, List, Tuple, Union
-
-from sklearn import datasets
-import matplotlib.pyplot as plt
+np.int = int  # Fix deprecated
 
 ## AUXILIARY ###
 DATA_DIRECTORY = '/serialised'
@@ -133,7 +134,8 @@ def print_loss(X_tensor: torch.Tensor, model: nn.Module, label: str = '') -> Non
     print(f"[{label}] test Loss= {loss.item()}")
 
 
-def get_losses_impl(X_tensor: torch.Tensor, model: nn.Module, label: str = '', do_print: bool = False) -> Tuple[List[float], float]:
+def get_losses_impl(X_tensor: torch.Tensor, model: nn.Module, label: str = '', do_print: bool = False) -> Tuple[
+    List[float], float]:
     losses = []
     _criterion = nn.MSELoss()
     with torch.no_grad():
@@ -226,7 +228,7 @@ class AnomalyClassifier(BaseEstimator, ClassifierMixin):
                  autoencoder_model: torch.nn.Module,
                  get_losses: Callable[[Union[np.ndarray, torch.Tensor, pd.DataFrame], torch.nn.Module], List[float]],
                  loss_threshold: float,
-                 scaler:StandardScaler) -> None:
+                 scaler: StandardScaler) -> None:
         self.autoencoder_model = autoencoder_model
         self.get_losses = get_losses
         self.loss_threshold = loss_threshold
@@ -428,4 +430,234 @@ print(f"X_anomaly_1 # = {len(X_anomaly_1_test_df)}")
 print(f"X_anomaly_2 # = {len(X_anomaly_2_test_df)}")
 
 
-## 16/12/2023 20:53 ###
+### Stability
+def mock_explanation_function(X_df: pd.DataFrame, y_df: pd.DataFrame, index: int) -> List[List[Dict[str, Any]]]:
+    columns = X_df.columns
+    random_rule = lambda column: (
+        column, f"{random.choice(['>=', '<'])}{random.uniform(X_df[column].min(), X_df[column].max())}")
+
+    # Losowe wybieranie kolumn do utworzenia reguł
+    selected_columns = random.sample(list(columns), random.randint(1, len(columns)))
+
+    rule = {col: [random_rule(col)[1]] for col in selected_columns}
+
+    return [[{
+        'rule': rule,
+        'prediction': str(random.randint(0, 1)),
+        'confidence': random.uniform(0.5, 1.0)
+    }]]
+
+
+def parse_rule(rule: str) -> tuple:
+    """Parses a rule into an operator and a value."""
+    operator = rule[:2] if rule[1] in "=<" else rule[0]
+    value = float(rule[2:]) if rule[1] in "=<" else float(rule[1:])
+    return operator, value
+
+
+def is_overlap(rule1: str, rule2: str, low: float = 0.0, high: float = 10.0) -> bool:
+    """Checks if two rules have a partial overlap with given column boundaries."""
+    op1, val1 = parse_rule(rule1)
+    op2, val2 = parse_rule(rule2)
+
+    # Dla reguł '>=', '>':
+    if op1 in ['>=', '>'] and op2 in ['>=', '>']:
+        return max(val1, val2) < high
+
+    # Dla reguł '<=', '<':
+    elif op1 in ['<=', '<'] and op2 in ['<=', '<']:
+        return min(val1, val2) > low
+
+    # Dla reguł mieszanych '>=', '<=' oraz '>', '<':
+    elif op1 in ['>=', '>'] and op2 in ['<=', '<']:
+        return val1 < val2 if op2 == '<' else val1 <= val2
+
+    elif op1 in ['<=', '<'] and op2 in ['>=', '>']:
+        return val1 > val2 if op2 == '>' else val1 >= val2
+
+    return False
+
+
+def calculate_overlap_degree(rules1: list, rules2: list, low: float = 0.0, high: float = 10.0) -> float:
+    """
+    Calculates the degree of overlap between two sets of rules.
+
+    Each set of rules can contain one or two rules, defining a range.
+    If a set contains one rule, the default boundaries (low and high) are used to define the range.
+    If a set contains two rules, they are interpreted as lower and upper bounds of the range.
+    The function returns the proportion of the overlap length to the average range length.
+
+    Args:
+    rules1 (list): The first set of rules.
+    rules2 (list): The second set of rules.
+    low (float): The default lower boundary if only one rule is provided.
+    high (float): The default upper boundary if only one rule is provided.
+
+    Returns:
+    float: The degree of overlap between the two sets of rules.
+    """
+
+    def get_range(rules: list) -> tuple:
+        """Determines the range defined by the rules."""
+        assert len(rules) <= 2, "Each rule set must contain at most two rules."
+
+        if len(rules) == 1:
+            op, val = parse_rule(rules[0])
+            return (max(val, low) if op in ['>=', '>'] else low, min(val, high) if op in ['<=', '<'] else high)
+        else:
+            op1, val1 = parse_rule(rules[0])
+            op2, val2 = parse_rule(rules[1])
+            lower_bound = max(val1, low) if op1 in ['>=', '>'] else max(val2, low)
+            upper_bound = min(val1, high) if op1 in ['<=', '<'] else min(val2, high)
+            return (lower_bound, upper_bound)
+
+    range1 = get_range(rules1)
+    range2 = get_range(rules2)
+
+    # Calculating the overlap
+    overlap_start = max(range1[0], range2[0])
+    overlap_end = min(range1[1], range2[1])
+
+    # Calculating the degree of overlap
+    if overlap_start < overlap_end:
+        overlap_length = overlap_end - overlap_start
+        average_range_length = (range1[1] - range1[0] + range2[1] - range2[0]) / 2
+        return overlap_length / average_range_length
+    else:
+        return 0.0  # No overlap
+
+
+def calculate_jaccard_distance(explanation_i: List[Dict], explanation_j: List[Dict]) -> float:
+    """
+    Calculates the Jaccard distance between two explanations using the degree of overlap.
+
+    The function computes the overlap degree for each column present in both explanations.
+    If a column is present in one explanation but not in the other, its contribution to the metric is zero.
+    Columns not present in either explanation are ignored.
+
+    Args:
+    explanation_1 (List[Dict]): The first explanation.
+    explanation_2 (List[Dict]): The second explanation.
+
+    Returns:
+    float: The Jaccard distance between the two explanations.
+    """
+
+    def create_rule_set(explanation: List[Dict]) -> Dict[str, list]:
+        rule_set = {}
+        for exp in explanation:
+            for col, rules in exp[0]['rule'].items():
+                rule_set[col] = rules
+        return rule_set
+
+    set_1 = create_rule_set(explanation_i)
+    set_2 = create_rule_set(explanation_j)
+
+    # Calculating overlaps
+    total_overlap = 0
+    common_columns = set(set_1.keys()).intersection(set(set_2.keys()))
+    for col in common_columns:
+        overlap_degree = calculate_overlap_degree(set_1[col], set_2[col], 0.0, 10.0)
+        total_overlap += overlap_degree
+
+    # Calculating Jaccard distance
+    total_columns = len(set(set_1.keys()).union(set(set_2.keys())))
+    if total_columns == 0:
+        return 0.0
+    jaccard_distance = 1 - total_overlap / total_columns
+    return jaccard_distance
+
+
+def hash_dataframe(df: pd.DataFrame) -> str:
+    return hashlib.sha256(pd.util.hash_pandas_object(df, index=True).values).hexdigest()
+
+
+class ExplanationCache:
+    def __init__(self):
+        self.cache = {}
+
+    def get_explanation(self, X_df: pd.DataFrame, y_df: pd.DataFrame, index: int, explanation_func: Callable) -> List[
+        Dict]:
+        X_hash = hash_dataframe(X_df)
+        y_hash = hash_dataframe(y_df)
+        key = (X_hash, y_hash, index)
+
+        if key not in self.cache:
+            self.cache[key] = explanation_func(X_df, y_df, index)
+        return self.cache[key]
+
+    def invalidate(self):
+        self.cache.clear()
+
+
+def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func: Callable, cache: ExplanationCache,
+                        convergence_threshold: float = 0.001, min_iterations: int = 1_000,
+                        max_iterations: int = 10_000, do_print: bool = False) -> (float, int):
+    """
+    Calculates the stability of explanations for a machine learning model.
+
+    Stability is measured using local Lipschitz continuity in a fixed neighborhood of any datapoint.
+    This approach evaluates how similar the explanations are for similar inputs.
+    A lower value indicates higher stability, implying that small changes in input do not significantly alter the explanation.
+
+    The stability metric is calculated as the maximum Lipschitz quotient across all pairs of data points.
+    The Lipschitz quotient for a pair of points is the weighted Jaccard distance between their explanations divided by the Euclidean distance between the points.
+    The Jaccard distance measures the dissimilarity between the sets of rules in the explanations.
+    The weighting factor is the average of the 'confidence' values associated with each explanation, reflecting the certainty of the model in its predictions.
+
+    Args:
+    X_df (pd.DataFrame): The feature dataframe.
+    y_df (pd.DataFrame): The target dataframe.
+    explanation_func (Callable): The function used to generate explanations.
+    cache (ExplanationCache): Cache object to store explanations.
+    convergence_threshold (float): The threshold for convergence of stability calculation.
+    min_iterations (int): The minimum number of iterations to perform.
+    max_iterations (int): The maximum number of iterations to perform.
+    do_print (bool): ...
+
+    Returns:
+    Tuple[float, int]: The calculated stability value and number of iterations.
+    """
+    max_lipschitz, prev_max_lipschitz = 0, None
+    all_indices = list(combinations(range(len(X_df)), 2))
+    random.shuffle(all_indices)
+    current_it = 0
+
+    with tqdm(total=max_iterations, desc="Calculating Stability") as pbar:
+        while (prev_max_lipschitz is None or abs(
+                max_lipschitz - prev_max_lipschitz) > convergence_threshold or min_iterations > current_it) and current_it < max_iterations:
+            prev_max_lipschitz = max_lipschitz
+            # Sample a subset of indices for this iteration
+            indices_subset = all_indices[current_it::max_iterations]
+            for i, j in indices_subset:
+                x_i, x_j = X_df.iloc[i], X_df.iloc[j]
+                explanation_i = cache.get_explanation(X_df, y_df, i, explanation_func)
+                explanation_j = cache.get_explanation(X_df, y_df, j, explanation_func)
+
+                # Calculate Euclidean distance between x_i and x_j
+                euclidean_distance = euclidean(x_i, x_j)
+
+                # Calculate Jaccard distance between explanations using our custom function
+                jaccard_distance = calculate_jaccard_distance(explanation_i, explanation_j)
+
+                # Weight by confidence
+                confidence_i = explanation_i[0][0]['confidence']
+                confidence_j = explanation_j[0][0]['confidence']
+                weighted_jaccard = jaccard_distance * (confidence_i + confidence_j) / 2
+
+                # Calculate Lipschitz quotient
+                lipschitz = weighted_jaccard / euclidean_distance if euclidean_distance != 0 else 0
+                max_lipschitz = max(max_lipschitz, lipschitz)
+
+                if do_print:
+                    print("explanation_i", explanation_i)
+                    print("explanation_j", explanation_j)
+                    print("jaccard_distance", jaccard_distance, "weighted_jaccard", weighted_jaccard)
+                    print("lipschitz", lipschitz, "max_lipschitz", max_lipschitz)
+
+            current_it += 1
+            pbar.update(1)
+
+    return max_lipschitz, current_it
+
+## 21/12/2023 18:07 ###

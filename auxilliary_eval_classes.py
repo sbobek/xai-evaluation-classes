@@ -618,14 +618,13 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
     Returns:
     Tuple[float, int]: The calculated stability value and number of iterations.
     """
-    max_lipschitz, prev_max_lipschitz = 0, None
+    max_lipschitz, prev_max_lipschitz = 0.0, None
     all_indices = list(combinations(range(len(X_df)), 2))
     random.shuffle(all_indices)
     current_it = 0
 
     with tqdm(total=max_iterations, desc="Calculating Stability") as pbar:
-        while (prev_max_lipschitz is None or abs(
-                max_lipschitz - prev_max_lipschitz) > convergence_threshold or min_iterations > current_it) and current_it < max_iterations:
+        while (prev_max_lipschitz is None or max_lipschitz <= 0.0 or abs(max_lipschitz - prev_max_lipschitz) > convergence_threshold or min_iterations > current_it) and current_it < max_iterations:
             prev_max_lipschitz = max_lipschitz
             # Sample a subset of indices for this iteration
             indices_subset = all_indices[current_it::max_iterations]
@@ -660,4 +659,4 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
 
     return max_lipschitz, current_it
 
-## 21/12/2023 18:07 ###
+## 21/12/2023 18:18 ###

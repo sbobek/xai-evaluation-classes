@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 from joblib import load
+from lux.lux.lux import LUX
 from scipy.spatial.distance import euclidean
 from scipy.stats import kstest, shapiro, skewnorm
 from sklearn import datasets
@@ -592,7 +593,8 @@ class ExplanationCache:
 
 def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func: Callable, cache: ExplanationCache,
                         convergence_threshold: float = 0.001, min_iterations: int = 1_000,
-                        max_iterations: int = 10_000, do_print: bool = False) -> (float, int):
+                        max_iterations: int = 10_000, do_print: bool = False, use_small_const: bool = False) -> (
+        float, int):
     """
     Calculates the stability of explanations for a machine learning model.
 
@@ -614,6 +616,7 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
     min_iterations (int): The minimum number of iterations to perform.
     max_iterations (int): The maximum number of iterations to perform.
     do_print (bool): ...
+    use_small_const (bool): ...
 
     Returns:
     Tuple[float, int]: The calculated stability value and number of iterations.
@@ -623,8 +626,10 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
     random.shuffle(all_indices)
     current_it = 0
 
-    with tqdm(total=max_iterations, desc="Calculating Stability") as pbar:
-        while (prev_max_lipschitz is None or max_lipschitz <= 0.0 or abs(max_lipschitz - prev_max_lipschitz) > convergence_threshold or min_iterations > current_it) and current_it < max_iterations:
+    _desc = "Calculating Stability [V1]" if use_small_const else "Calculating Stability with non-zero factor [V2]"
+    with tqdm(total=max_iterations, desc=_desc) as pbar:
+        while (prev_max_lipschitz is None or max_lipschitz <= 0.0 or abs(
+                max_lipschitz - prev_max_lipschitz) > convergence_threshold or min_iterations > current_it) and current_it < max_iterations:
             prev_max_lipschitz = max_lipschitz
             # Sample a subset of indices for this iteration
             indices_subset = all_indices[current_it::max_iterations]
@@ -637,7 +642,10 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
                 euclidean_distance = euclidean(x_i, x_j)
 
                 # Calculate Jaccard distance between explanations using our custom function
-                jaccard_distance = calculate_jaccard_distance(explanation_i, explanation_j)
+                if use_small_const:
+                    jaccard_distance = calculate_jaccard_distance(explanation_i, explanation_j) + 1e-5
+                else:
+                    jaccard_distance = calculate_jaccard_distance(explanation_i, explanation_j)
 
                 # Weight by confidence
                 confidence_i = explanation_i[0][0]['confidence']
@@ -659,4 +667,109 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
 
     return max_lipschitz, current_it
 
-## 21/12/2023 18:18 ###
+
+def lipschitz_stability_in_windows(
+        time_series_df: pd.DataFrame,
+        shap_importance_df: pd.DataFrame,
+        model: Any,
+        scaler: Any,
+        background_data_source: str = 'start',
+        do_print: bool = False) -> pd.DataFrame:
+    """
+    Compute stability of model explanations in windows for a time series dataset.
+
+    Parameters:
+    - time_series_df: The time series dataframe.
+    - shap_importance_df: DataFrame of computed SHAP importance values; only indexes are used.
+    - model: The trained model.
+    - scaler: The data scaler.
+    - background_data_source: Source of the background data ('start', 'current_window', or 'previous_window').
+
+    Returns:
+    - DataFrame: A DataFrame containing stability results for each window.
+    """
+    if background_data_source not in ('start', 'current_window', 'previous_window'):
+        raise ValueError(
+            f"Unsupported background data source: {background_data_source}. Choose 'start', 'current_window', or 'previous_window'.")
+
+    results = []
+    feature_names = ['sepal_length_cm', 'sepal_width_cm', 'petal_length_cm', 'petal_width_cm']
+    background_data = scaler.transform(time_series_df[feature_names].iloc[:100])  # assumption: using only first window
+
+    previous_window = None
+
+    for idx, row in shap_importance_df.iterrows():
+        start, end = int(row['start']), int(row['end'])
+        data_window = time_series_df.iloc[start:end]
+        X_window = data_window[feature_names]
+        X_window_scaled = scaler.transform(X_window)
+
+        if background_data_source == 'current_window':
+            background_data = X_window_scaled
+        elif background_data_source == 'previous_window' and previous_window is not None:
+            background_data = previous_window
+
+        previous_window = X_window_scaled
+
+        # Calculate y_df using the model (0 = normal, 1 = anomaly)
+        _y_df = model.predict(X_window_scaled)
+        _y_df = pd.DataFrame(_y_df, columns=['prediction'], index=data_window.index).reset_index(drop=True)
+        _y_df = _y_df.replace({0.0: 0, 1.0: 1})
+
+        # X_window_scaled_df = pd.DataFrame(X_window_scaled, columns=feature_names, index=data_window.index)
+        _X_df = pd.DataFrame(X_window, columns=feature_names).reset_index(drop=True)
+
+        # Create LUX object
+        lux_obj = LUX(predict_proba=model.predict_proba, neighborhood_size=0.1, max_depth=3, node_size_limit=4,
+                      grow_confidence_threshold=0, min_samples=50)
+
+        # Define lux_explanation_function within the loop
+        def _lux_explanation_function(X_df: pd.DataFrame, y_df: pd.DataFrame, index: int, lux_object: LUX = lux_obj) -> \
+                List[List[Dict[str, Any]]]:
+            instance_to_explain = X_df.iloc[index].values.reshape(1, -1)
+            lux_object.fit(X_df, y_df, instance_to_explain=instance_to_explain, inverse_sampling=True,
+                           oversampling=False, prune=True, oblique=False)
+            justification = lux_object.justify(instance_to_explain, to_dict=True)
+            return justification
+
+        # Split cases by y_df into two classes and calculate Lipschitz stability, iterations
+        normal_indices = _y_df['prediction'] == 0
+        anomaly_indices = _y_df['prediction'] == 1
+        num_normal_samples = normal_indices.sum()
+        num_anomaly_samples = anomaly_indices.sum()
+
+        if num_normal_samples >= 2:
+            cache = ExplanationCache()
+            lip_stab_n, it_n = calculate_stability(_X_df[normal_indices],
+                                                   _y_df[normal_indices],
+                                                   lambda X_df_ignored, y_df_ignored, index: _lux_explanation_function(
+                                                       _X_df, _y_df, index),
+                                                   cache, min_iterations=3, max_iterations=10, do_print=do_print)
+
+            cache.invalidate()
+        else:
+            print(f"[{idx}] For start= {start}, end= {end} skipping normal class")
+            lip_stab_n, it_n = np.nan, 0
+        # TODO prosty jaccard 0 - 1
+        if num_normal_samples >= 2:
+            cache = ExplanationCache()
+            lip_stab_a, it_a = calculate_stability(_X_df[anomaly_indices],
+                                                   _y_df[anomaly_indices],
+                                                   lambda X_df_ignored, y_df_ignored, index: _lux_explanation_function(
+                                                       _X_df, _y_df, index),
+                                                   cache, min_iterations=3, max_iterations=10, do_print=do_print)
+            cache.invalidate()
+        else:
+            print(f"[{idx}] For start= {start}, end= {end} skipping anomaly class")
+            lip_stab_a, it_a = np.nan, 0
+
+        # Append results for each window
+        results.append([start, end, lip_stab_n, it_n, num_normal_samples, lip_stab_a, it_a, num_anomaly_samples])
+
+    # Create DataFrame with results
+    columns = ['start', 'end', 'lipschitz_stability_normal', 'iterations_normal', 'count_normal',
+               'lipschitz_stability_anomaly',
+               'iterations_anomaly', 'count_anomaly']
+    return pd.DataFrame(results, columns=columns)
+
+## 02/01/2024 13:28 ###

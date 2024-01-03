@@ -716,7 +716,6 @@ def lipschitz_stability_in_windows(
         _y_df = pd.DataFrame(_y_df, columns=['prediction'], index=data_window.index).reset_index(drop=True)
         _y_df = _y_df.replace({0.0: 0, 1.0: 1})
 
-        # X_window_scaled_df = pd.DataFrame(X_window_scaled, columns=feature_names, index=data_window.index)
         _X_df = pd.DataFrame(X_window, columns=feature_names).reset_index(drop=True)
 
         # Create LUX object
@@ -742,6 +741,8 @@ def lipschitz_stability_in_windows(
             cache = ExplanationCache()
             lip_stab_n, it_n = calculate_stability(_X_df[normal_indices],
                                                    _y_df[normal_indices],
+                                                   # we use lambda to fit lux for all cases, both normal and anomaly
+                                                   # (no sens in fitting LUX for one class)
                                                    lambda X_df_ignored, y_df_ignored, index: _lux_explanation_function(
                                                        _X_df, _y_df, index),
                                                    cache, min_iterations=3, max_iterations=10, do_print=do_print)

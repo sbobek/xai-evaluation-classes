@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from anchor import anchor_tabular
 from joblib import load
 from lux.lux.lux import LUX
 from scipy.spatial.distance import euclidean
@@ -668,13 +669,90 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
     return max_lipschitz, current_it
 
 
+def generate_anchor_explanation(index, ts_df, explainer, model, a_scaler, feature_names, max_attempts=3,
+                                do_print=False):
+    """
+    Generates an explanation for a selected observation in a DataFrame.
+
+    :param index: Index of the observation to explain in the DataFrame.
+    :param ts_df: DataFrame containing the observations.
+    :param explainer: AnchorTabularExplainer object.
+    :param model: Model to be explained.
+    :param a_scaler: Not needed - model handles it if get pd.DataFrame
+    :param feature_names: List of all feature names.
+    :param label_encoders: Optional dictionary of LabelEncoders for categorical features.
+    :param max_attempts: Maximum number of attempts to generate an explanation.
+    :return: Generated explanation.
+    """
+    instance = ts_df.loc[index, feature_names]
+    instance_df = pd.DataFrame([instance], columns=feature_names)
+    # scaled_instance = a_scaler.transform([instance.values])[0]
+    # scaled_instance_df = pd.DataFrame([scaled_instance], columns=feature_names)
+    best_exp = None
+    best_metric_for_exp = -1
+
+    for attempt in range(max_attempts):
+        exp = explainer.explain_instance(
+            instance.values,
+            lambda x: model.predict(pd.DataFrame(x, columns=feature_names)),  # For model to know that need to be scaled
+            threshold=0.95
+        )
+
+        if exp.coverage() * exp.precision() > best_metric_for_exp:
+            best_exp = exp
+            best_metric_for_exp = exp.coverage() * exp.precision()
+
+    prediction = model.predict(instance_df)[0]
+    if do_print:
+        print("For observation #", index, "prediction =",
+              "normal" if prediction == 0.0 else "anomaly")
+        print('Anchor: %s' % (' AND '.join(best_exp.names())))
+        print('Precision: %.2f' % best_exp.precision())
+        print('Coverage: %.2f' % best_exp.coverage())
+
+    # Convert AnchorExplanation to the specified format
+    explanation = []
+    if best_exp:
+        rule_dict = {}
+        for feature_name in feature_names:
+            for rule in best_exp.names():
+                if feature_name in rule:
+                    processed_rules = []
+                    for op in ["> ", ">= "]:
+                        if op in rule:
+                            left_rules = rule.split(op)
+                            if feature_name in left_rules[0]:
+                                processed_rules.append((op + left_rules[1]).replace(' ', ''))
+                            else:
+                                assert feature_name in left_rules[1]
+                                processed_rules.append(
+                                    (("< " if op == "> " else "<= ") + left_rules[0]).replace(' ', ''))
+                    for op in ["< ", "<= "]:
+                        if op in rule:
+                            right_rules = rule.split(op)
+                            if feature_name in right_rules[1]:
+                                processed_rules.append(
+                                    (("> " if op == "< " else ">= ") + right_rules[0]).replace(' ', ''))
+                            else:
+                                assert feature_name in right_rules[0]
+                                processed_rules.append((op + right_rules[1]).replace(' ', ''))
+                    rule_dict[feature_name] = processed_rules
+
+        explanation.append(
+            [{'rule': rule_dict, 'prediction': str(int(prediction)), 'confidence': best_exp.precision()}])
+
+    return explanation
+
+
 def lipschitz_stability_in_windows(
         time_series_df: pd.DataFrame,
         shap_importance_df: pd.DataFrame,
         model: Any,
         scaler: Any,
         background_data_source: str = 'start',
-        do_print: bool = False) -> pd.DataFrame:
+        type: str = "LUX",
+        do_print: bool = False,
+        use_small_const: bool = False) -> pd.DataFrame:
     """
     Compute stability of model explanations in windows for a time series dataset.
 
@@ -692,11 +770,26 @@ def lipschitz_stability_in_windows(
         raise ValueError(
             f"Unsupported background data source: {background_data_source}. Choose 'start', 'current_window', or 'previous_window'.")
 
+    if type not in ('LUX', 'ANCHOR'):
+        raise ValueError(
+            f"Unsupported type: {type}. Choose 'LUX' or 'ANCHOR'.")
+
     results = []
     feature_names = ['sepal_length_cm', 'sepal_width_cm', 'petal_length_cm', 'petal_width_cm']
-    background_data = scaler.transform(time_series_df[feature_names].iloc[:100])  # assumption: using only first window
+
+    background_data = time_series_df[feature_names].iloc[:100]  # assumption: using only first window
+    background_data_scaled = scaler.transform(background_data)  # assumption: using only first window
+
+    def get_background_data_y(backgr_data_df, backgr_data_scaled):
+        backgr_data_y_df = model.predict(backgr_data_scaled)
+        backgr_data_y_df = pd.DataFrame(backgr_data_y_df, columns=['prediction'],
+                                        index=backgr_data_df.index).reset_index(drop=True)
+        return backgr_data_y_df.replace({0.0: 0, 1.0: 1})
+
+    background_data_y = get_background_data_y(background_data, background_data_scaled)
 
     previous_window = None
+    previous_window_scaled = None
 
     for idx, row in shap_importance_df.iterrows():
         start, end = int(row['start']), int(row['end'])
@@ -705,11 +798,16 @@ def lipschitz_stability_in_windows(
         X_window_scaled = scaler.transform(X_window)
 
         if background_data_source == 'current_window':
-            background_data = X_window_scaled
+            background_data = X_window
+            background_data_scaled = X_window_scaled
+            background_data_y = get_background_data_y(background_data, background_data_scaled)
         elif background_data_source == 'previous_window' and previous_window is not None:
             background_data = previous_window
+            background_data_scaled = previous_window_scaled
+            background_data_y = get_background_data_y(background_data, background_data_scaled)
 
-        previous_window = X_window_scaled
+        previous_window = X_window
+        previous_window_scaled = X_window_scaled
 
         # Calculate y_df using the model (0 = normal, 1 = anomaly)
         _y_df = model.predict(X_window_scaled)
@@ -718,18 +816,49 @@ def lipschitz_stability_in_windows(
 
         _X_df = pd.DataFrame(X_window, columns=feature_names).reset_index(drop=True)
 
-        # Create LUX object
-        lux_obj = LUX(predict_proba=model.predict_proba, neighborhood_size=0.1, max_depth=3, node_size_limit=4,
-                      grow_confidence_threshold=0, min_samples=50)
+        _explanation_function: Callable = mock_explanation_function
+        if type == "LUX":
+            # Create LUX object
+            lux_obj = LUX(predict_proba=lambda x:
+            model.predict(x) if isinstance(x, pd.DataFrame) else model.predict(pd.DataFrame(x, columns=feature_names)),
+                          # For model to know that need to be scaled,
+                          neighborhood_size=0.1,
+                          max_depth=3,
+                          node_size_limit=4,
+                          grow_confidence_threshold=0,
+                          min_samples=50)
 
-        # Define lux_explanation_function within the loop
-        def _lux_explanation_function(X_df: pd.DataFrame, y_df: pd.DataFrame, index: int, lux_object: LUX = lux_obj) -> \
-                List[List[Dict[str, Any]]]:
-            instance_to_explain = X_df.iloc[index].values.reshape(1, -1)
-            lux_object.fit(X_df, y_df, instance_to_explain=instance_to_explain, inverse_sampling=True,
-                           oversampling=False, prune=True, oblique=False)
-            justification = lux_object.justify(instance_to_explain, to_dict=True)
-            return justification
+            # Define lux_explanation_function within the loop
+            def _lux_explanation_function(X_df: pd.DataFrame, background_data_df: pd.DataFrame,
+                                          background_data_y_df: pd.DataFrame,
+                                          index: int,
+                                          lux_object: LUX = lux_obj) -> \
+                    List[List[Dict[str, Any]]]:
+                instance_to_explain = X_df.iloc[index].values.reshape(1, -1)
+                print(X_df)
+                print(background_data_df)
+                print(background_data_y_df)
+                print(instance_to_explain)
+                # TODO Check if LUX use instance_to_explain as pd.DataFrame or numpy?
+                lux_object.fit(background_data_df, background_data_y_df, instance_to_explain=instance_to_explain,
+                               inverse_sampling=True,
+                               oversampling=False, prune=True, oblique=False)
+                justification = lux_object.justify(instance_to_explain, to_dict=True)
+                return justification
+
+            # we use lambda to fit lux for all cases, both normal and anomaly
+            # (no sens in fitting LUX for one class)
+            # TODO Check LUX use background data!
+            _explanation_function = lambda X_df_ignored, y_df_ignored, index: _lux_explanation_function(
+                _X_df, background_data, background_data_y, index)
+        elif type == "ANCHOR":
+            explainer_anchor_tabular = anchor_tabular.AnchorTabularExplainer(class_names=[0.0, 1.0],
+                                                                             feature_names=feature_names,
+                                                                             train_data=background_data.values,
+                                                                             discretizer='quartile')
+
+            _explanation_function = lambda X_df_ignored, y_df_ignored, index: generate_anchor_explanation(
+                index, _X_df, explainer_anchor_tabular, model, None, feature_names)
 
         # Split cases by y_df into two classes and calculate Lipschitz stability, iterations
         normal_indices = _y_df['prediction'] == 0
@@ -737,28 +866,31 @@ def lipschitz_stability_in_windows(
         num_normal_samples = normal_indices.sum()
         num_anomaly_samples = anomaly_indices.sum()
 
+        # TODO prosty jaccard 0 - 1
         if num_normal_samples >= 2:
             cache = ExplanationCache()
             lip_stab_n, it_n = calculate_stability(_X_df[normal_indices],
                                                    _y_df[normal_indices],
-                                                   # we use lambda to fit lux for all cases, both normal and anomaly
-                                                   # (no sens in fitting LUX for one class)
-                                                   lambda X_df_ignored, y_df_ignored, index: _lux_explanation_function(
-                                                       _X_df, _y_df, index),
-                                                   cache, min_iterations=3, max_iterations=10, do_print=do_print)
+                                                   _explanation_function,
+                                                   cache, min_iterations=3,
+                                                   max_iterations=10,
+                                                   do_print=do_print,
+                                                   use_small_const=use_small_const)
 
             cache.invalidate()
         else:
             print(f"[{idx}] For start= {start}, end= {end} skipping normal class")
             lip_stab_n, it_n = np.nan, 0
-        # TODO prosty jaccard 0 - 1
-        if num_normal_samples >= 2:
+
+        if num_anomaly_samples >= 2:
             cache = ExplanationCache()
             lip_stab_a, it_a = calculate_stability(_X_df[anomaly_indices],
                                                    _y_df[anomaly_indices],
-                                                   lambda X_df_ignored, y_df_ignored, index: _lux_explanation_function(
-                                                       _X_df, _y_df, index),
-                                                   cache, min_iterations=3, max_iterations=10, do_print=do_print)
+                                                   _explanation_function,
+                                                   cache, min_iterations=3,
+                                                   max_iterations=10,
+                                                   do_print=do_print,
+                                                   use_small_const=use_small_const)
             cache.invalidate()
         else:
             print(f"[{idx}] For start= {start}, end= {end} skipping anomaly class")
@@ -773,4 +905,4 @@ def lipschitz_stability_in_windows(
                'iterations_anomaly', 'count_anomaly']
     return pd.DataFrame(results, columns=columns)
 
-## 02/01/2024 13:28 ###
+## 03/01/2024 15:47 ###

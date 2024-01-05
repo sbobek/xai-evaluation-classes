@@ -669,7 +669,7 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
     return max_lipschitz, current_it
 
 
-def generate_anchor_explanation(index, ts_df, explainer, model, a_scaler, feature_names, max_attempts=3,
+def generate_anchor_explanation(index, ts_df, explainer, model, feature_names, max_attempts=3,
                                 do_print=False):
     """
     Generates an explanation for a selected observation in a DataFrame.
@@ -678,7 +678,6 @@ def generate_anchor_explanation(index, ts_df, explainer, model, a_scaler, featur
     :param ts_df: DataFrame containing the observations.
     :param explainer: AnchorTabularExplainer object.
     :param model: Model to be explained.
-    :param a_scaler: Not needed - model handles it if get pd.DataFrame
     :param feature_names: List of all feature names.
     :param label_encoders: Optional dictionary of LabelEncoders for categorical features.
     :param max_attempts: Maximum number of attempts to generate an explanation.
@@ -686,6 +685,7 @@ def generate_anchor_explanation(index, ts_df, explainer, model, a_scaler, featur
     """
     instance = ts_df.loc[index, feature_names]
     instance_df = pd.DataFrame([instance], columns=feature_names)
+    # a_scaler = model.scaler
     # scaled_instance = a_scaler.transform([instance.values])[0]
     # scaled_instance_df = pd.DataFrame([scaled_instance], columns=feature_names)
     best_exp = None
@@ -858,7 +858,7 @@ def lipschitz_stability_in_windows(
                                                                              discretizer='quartile')
 
             _explanation_function = lambda X_df_ignored, y_df_ignored, index: generate_anchor_explanation(
-                index, _X_df, explainer_anchor_tabular, model, None, feature_names)
+                index, _X_df, explainer_anchor_tabular, model, feature_names)
 
         # Split cases by y_df into two classes and calculate Lipschitz stability, iterations
         normal_indices = _y_df['prediction'] == 0

@@ -748,7 +748,7 @@ def lipschitz_stability_in_windows(
         time_series_df: pd.DataFrame,
         shap_importance_df: pd.DataFrame,
         model: Any,
-        scaler: Any,
+        scaler: Any,  # TODO use scaler from model
         background_data_source: str = 'start',
         type: str = "LUX",
         do_print: bool = False,
@@ -791,6 +791,9 @@ def lipschitz_stability_in_windows(
     previous_window = None
     previous_window_scaled = None
 
+    # Model only scale pd.DataFrame, which LUX does not use,
+    model_predict_wrapper_for_LUX = lambda x: model.predict_proba(scaler.transform(x))
+
     for idx, row in shap_importance_df.iterrows():
         start, end = int(row['start']), int(row['end'])
         data_window = time_series_df.iloc[start:end]
@@ -816,12 +819,10 @@ def lipschitz_stability_in_windows(
 
         _X_df = pd.DataFrame(X_window, columns=feature_names).reset_index(drop=True)
 
-        _explanation_function: Callable = mock_explanation_function
+        _explanation_function: Callable = None # mock_explanation_function
         if type == "LUX":
             # Create LUX object
-            lux_obj = LUX(predict_proba=lambda x:
-            model.predict(x) if isinstance(x, pd.DataFrame) else model.predict(pd.DataFrame(x, columns=feature_names)),
-                          # For model to know that need to be scaled,
+            lux_obj = LUX(predict_proba=model_predict_wrapper_for_LUX,
                           neighborhood_size=0.1,
                           max_depth=3,
                           node_size_limit=4,
@@ -835,10 +836,10 @@ def lipschitz_stability_in_windows(
                                           lux_object: LUX = lux_obj) -> \
                     List[List[Dict[str, Any]]]:
                 instance_to_explain = X_df.iloc[index].values.reshape(1, -1)
-                print(X_df)
-                print(background_data_df)
-                print(background_data_y_df)
-                print(instance_to_explain)
+                # print(X_df)
+                # print(background_data_df)
+                # print(background_data_y_df)
+                # print(instance_to_explain)
                 # TODO Check if LUX use instance_to_explain as pd.DataFrame or numpy?
                 lux_object.fit(background_data_df, background_data_y_df, instance_to_explain=instance_to_explain,
                                inverse_sampling=True,
@@ -905,4 +906,4 @@ def lipschitz_stability_in_windows(
                'iterations_anomaly', 'count_anomaly']
     return pd.DataFrame(results, columns=columns)
 
-## 03/01/2024 15:47 ###
+## 05/01/2024 14:52 ###

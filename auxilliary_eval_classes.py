@@ -2,6 +2,7 @@ import hashlib
 import os
 import pickle
 import random
+import traceback
 from itertools import combinations
 from typing import Any, Callable, List, Dict
 from typing import Optional
@@ -819,7 +820,7 @@ def lipschitz_stability_in_windows(
 
         _X_df = pd.DataFrame(X_window, columns=feature_names).reset_index(drop=True)
 
-        _explanation_function: Callable = None # mock_explanation_function
+        _explanation_function: Callable = None  # mock_explanation_function
         if type == "LUX":
             # Create LUX object
             lux_obj = LUX(predict_proba=model_predict_wrapper_for_LUX,
@@ -836,20 +837,21 @@ def lipschitz_stability_in_windows(
                                           lux_object: LUX = lux_obj) -> \
                     List[List[Dict[str, Any]]]:
                 instance_to_explain = X_df.iloc[index].values.reshape(1, -1)
-                # print(X_df)
-                # print(background_data_df)
-                # print(background_data_y_df)
-                # print(instance_to_explain)
-                # TODO Check if LUX use instance_to_explain as pd.DataFrame or numpy?
-                lux_object.fit(background_data_df, background_data_y_df, instance_to_explain=instance_to_explain,
-                               inverse_sampling=True,
-                               oversampling=False, prune=True, oblique=False)
-                justification = lux_object.justify(instance_to_explain, to_dict=True)
-                return justification
+                try:
+                    lux_object.fit(background_data_df, background_data_y_df, instance_to_explain=instance_to_explain,
+                                   inverse_sampling=True,
+                                   oversampling=False, prune=True, oblique=False)
+                    return lux_object.justify(instance_to_explain, to_dict=True)
+                except Exception as e:
+                    print(f"! Can't fit LUX explanation at index {index}")
+                    print(f"! Instance to explain: {instance_to_explain}")
+                    print(f"! Background: {background_data_df}")
+                    print(f"! Exception: {e}")
+                    traceback.print_exc()
+                    return [[{'rule': {}, 'prediction': 'NA', 'confidence': 0}]]
 
             # we use lambda to fit lux for all cases, both normal and anomaly
             # (no sens in fitting LUX for one class)
-            # TODO Check LUX use background data!
             _explanation_function = lambda X_df_ignored, y_df_ignored, index: _lux_explanation_function(
                 _X_df, background_data, background_data_y, index)
         elif type == "ANCHOR":
@@ -906,4 +908,4 @@ def lipschitz_stability_in_windows(
                'iterations_anomaly', 'count_anomaly']
     return pd.DataFrame(results, columns=columns)
 
-## 05/01/2024 14:52 ###
+## 08/01/2024 7:37 ###

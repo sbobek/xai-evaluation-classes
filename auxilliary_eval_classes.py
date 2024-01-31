@@ -530,7 +530,9 @@ def calculate_overlap_degree(rules1: list, rules2: list, low: float = 0.0, high:
         return 0.0  # No overlap
 
 
-def calculate_jaccard_distance(explanation_i: List[Dict], explanation_j: List[Dict]) -> float:
+def calculate_jaccard_distance(explanation_i: List[Dict],
+                               explanation_j: List[Dict],
+                               take_prediction_into_account:bool = False) -> float:
     """
     Calculates the Jaccard distance between two explanations using the degree of overlap.
 
@@ -553,21 +555,28 @@ def calculate_jaccard_distance(explanation_i: List[Dict], explanation_j: List[Di
                 rule_set[col] = rules
         return rule_set
 
-    set_1 = create_rule_set(explanation_i)
-    set_2 = create_rule_set(explanation_j)
+    set_i = create_rule_set(explanation_i)
+    set_j = create_rule_set(explanation_j)
 
     # Calculating overlaps
     total_overlap = 0
-    common_columns = set(set_1.keys()).intersection(set(set_2.keys()))
+    common_columns = set(set_i.keys()).intersection(set(set_j.keys()))
     for col in common_columns:
-        overlap_degree = calculate_overlap_degree(set_1[col], set_2[col], 0.0, 10.0)
+        overlap_degree = calculate_overlap_degree(set_i[col], set_j[col], 0.0, 10.0)
         total_overlap += overlap_degree
 
     # Calculating Jaccard distance
-    total_columns = len(set(set_1.keys()).union(set(set_2.keys())))
+    total_columns = len(set(set_i.keys()).union(set(set_j.keys())))
     if total_columns == 0:
         return 0.0
     jaccard_distance = 1 - total_overlap / total_columns
+    if take_prediction_into_account:
+        prediction_i = explanation_i[0][0]['prediction']
+        prediction_j = explanation_j[0][0]['prediction']
+        delta = int(prediction_i == prediction_j)
+        # if delta > 0:
+        #     print("Jaccard distance: taking into account different predictions")
+        jaccard_distance += 1 - delta
     return jaccard_distance
 
 
@@ -671,7 +680,7 @@ def calculate_stability(X_df: pd.DataFrame, y_df: pd.DataFrame, explanation_func
 
 
 def generate_anchor_explanation(index, ts_df, explainer, model, feature_names, max_attempts=3,
-                                do_print=False):
+                                do_print=False, not_scaled_instance=None, prediction=None):
     """
     Generates an explanation for a selected observation in a DataFrame.
 
@@ -682,19 +691,22 @@ def generate_anchor_explanation(index, ts_df, explainer, model, feature_names, m
     :param feature_names: List of all feature names.
     :param label_encoders: Optional dictionary of LabelEncoders for categorical features.
     :param max_attempts: Maximum number of attempts to generate an explanation.
+    :param not_scaled_instance: .
+    :param prediction: .
+
     :return: Generated explanation.
     """
-    instance = ts_df.loc[index, feature_names]
-    instance_df = pd.DataFrame([instance], columns=feature_names)
-    # a_scaler = model.scaler
-    # scaled_instance = a_scaler.transform([instance.values])[0]
-    # scaled_instance_df = pd.DataFrame([scaled_instance], columns=feature_names)
+    if not_scaled_instance is None:
+        instance_df = ts_df.loc[index, feature_names]
+    else:
+        instance_df = pd.DataFrame([not_scaled_instance], columns=feature_names)
+
     best_exp = None
     best_metric_for_exp = -1
 
     for attempt in range(max_attempts):
         exp = explainer.explain_instance(
-            instance.values,
+            instance_df.values,
             lambda x: model.predict(pd.DataFrame(x, columns=feature_names)),  # For model to know that need to be scaled
             threshold=0.95
         )
@@ -703,7 +715,9 @@ def generate_anchor_explanation(index, ts_df, explainer, model, feature_names, m
             best_exp = exp
             best_metric_for_exp = exp.coverage() * exp.precision()
 
-    prediction = model.predict(instance_df)[0]
+    if prediction is None:
+        prediction = model.predict(instance_df)[0]
+
     if do_print:
         print("For observation #", index, "prediction =",
               "normal" if prediction == 0.0 else "anomaly")
@@ -908,4 +922,7 @@ def lipschitz_stability_in_windows(
                'iterations_anomaly', 'count_anomaly']
     return pd.DataFrame(results, columns=columns)
 
-## 08/01/2024 7:37 ###
+
+# def compute_stability_in_windows_v7( TODO
+
+## 31/01/2024 20:50 ###

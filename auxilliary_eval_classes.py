@@ -24,7 +24,7 @@ from sklearn.preprocessing import StandardScaler
 from torch import nn
 from tqdm.notebook import tqdm
 
-np.int = int  # Fix deprecated
+# np.int = int  # Fix deprecated
 
 ## AUXILIARY ###
 DATA_DIRECTORY = '/serialised'
@@ -925,4 +925,4 @@ def lipschitz_stability_in_windows(
 
 # def compute_stability_in_windows_v7( TODO
 
-## 31/01/2024 20:50 ###
+## 06/06/2024 12:20 ###

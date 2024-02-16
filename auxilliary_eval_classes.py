@@ -24,7 +24,7 @@ from sklearn.preprocessing import StandardScaler
 from torch import nn
 from tqdm.notebook import tqdm
 
-# np.int = int  # Fix deprecated
+np.int = int  # Fix deprecated for LUX
 
 ## AUXILIARY ###
 DATA_DIRECTORY = '/serialised'

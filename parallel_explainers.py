@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 import tensorflow as tf
+from anchor import anchor_tabular
 from lime.lime_tabular import LimeTabularExplainer
 from tensorflow.keras.models import load_model
 
@@ -39,7 +40,8 @@ class ModelWrapper:
             return preds
 
 
-def compute_single_lime_explanation(index, instance, model_wrapper, explainer, num_features, timesteps):
+def compute_single_lime_explanation(index, instance, model_wrapper, explainer,
+                                    num_features, timesteps, flattened_feature_names):
     """
     Compute LIME explanation for a single instance and reshape its importance.
 
@@ -80,7 +82,7 @@ def compute_lime_explanation(instances, model_wrapper, explainer, num_features, 
     ordered_results = []
     for index, instance in enumerate(instances):
         _, reshaped_importance = compute_single_lime_explanation(
-            index, instance, model_wrapper, explainer, num_features, timesteps)
+            index, instance, model_wrapper, explainer, num_features, timesteps, None)
         ordered_results.append(reshaped_importance)
 
     # Combine the explanations into a single array
@@ -88,9 +90,9 @@ def compute_lime_explanation(instances, model_wrapper, explainer, num_features, 
     return combined_explanations
 
 
-def worker_init(model_path, num_features, timesteps,
-                flattened_background_data, flattened_feature_names, class_names,
-                num_cores, gpu_idx):
+def worker_init_lime(model_path, num_features, timesteps,
+                     flattened_background_data, flattened_feature_names, class_names,
+                     num_cores, gpu_idx):
     """
     Initialize worker by loading the model into a global variable.
     This function is called when each worker process starts.
@@ -103,6 +105,25 @@ def worker_init(model_path, num_features, timesteps,
         mode='classification')
     print("explainer initialised\n")
 
+def worker_init_lime_and_model(model_path, num_features, timesteps,
+                     flattened_background_data, flattened_feature_names, class_names,
+                     num_cores, gpu_idx):
+    worker_init_lime(model_path, num_features, timesteps,
+                     flattened_background_data, flattened_feature_names, class_names,
+                     num_cores, gpu_idx)
+    worker_init_model(model_path, num_features, timesteps,
+                      flattened_background_data, flattened_feature_names, class_names,
+                      num_cores, gpu_idx)
+
+
+
+def worker_init_model(model_path, num_features, timesteps,
+                      flattened_background_data, flattened_feature_names, class_names,
+                      num_cores, gpu_idx):
+    """
+    Initialize worker by loading the model into a global variable.
+    This function is called when each worker process starts.
+    """
     print(f"loading model {model_path}\n")
     # Ensure TensorFlow uses only necessary resources and does not conflict with others
     # tf.config.threading.set_inter_op_parallelism_threads(1)
@@ -139,9 +160,10 @@ def compute_single_lime_explanation_parallel_helper(args):
     # model_wrapper, explainer are global
     index, instance, num_features, timesteps = args
     _, reshaped_importance = compute_single_lime_explanation(
-        index, instance, model_wrapper, explainer, num_features, timesteps)
+        index, instance, model_wrapper, explainer, num_features, timesteps, None)
 
     return reshaped_importance
+
 
 
 def compute_lime_explanation_parallel(instances,
@@ -159,9 +181,11 @@ def compute_lime_explanation_parallel(instances,
 
     :return: A 3D array with explanations reshaped to original instance shapes (samples, timesteps, features).
     """
+
     # Set up multiprocessing pool with the specified number of workers
     # and initialize each worker using the worker_init function
-    pool = Pool(processes=num_cores, initializer=worker_init, initargs=(
+
+    pool = Pool(processes=num_cores, initializer=worker_init_lime_and_model, initargs=(
         model_path, num_features, timesteps,
         flattened_background_data, flattened_feature_names, class_names,
         num_cores, gpu_idx))
@@ -180,4 +204,168 @@ def compute_lime_explanation_parallel(instances,
     combined_explanations = np.array(ordered_results)
     return combined_explanations
 
-### 07.03.2024: 11:28 ###
+
+def compute_single_anchor_explanation(index, instance, model_wrapper, explainer, num_features, timesteps,
+                                      background_feature_names):
+    fn_predict = lambda x: [np.argmax(pred) for pred in model_wrapper.predict_proba(x)]
+    best_exp = explainer.explain_instance(
+        instance,
+        fn_predict,
+        threshold=0.95)
+
+    prediction = fn_predict(instance)[0]
+    # def compute_single_anchor_explanation(index, best_exp, prediction, background_feature_names):
+    # Convert AnchorExplanation to the specified format
+    explanation = []
+    if best_exp:
+        rule_dict = {}
+        for feature_name in background_feature_names:
+            for rule in best_exp.names():
+                # print("rule", rule)
+                if feature_name in rule:
+                    processed_rules = []
+                    for op in ["> ", ">= "]:
+                        if op in rule:
+                            left_rules = rule.split(op)
+                            if feature_name in left_rules[0]:
+                                processed_rules.append((op + left_rules[1]).replace(' ', ''))
+                            else:
+                                assert feature_name in left_rules[1]
+                                processed_rules.append(
+                                    (("< " if op == "> " else "<= ") + left_rules[0]).replace(' ', ''))
+                    for op in ["< ", "<= "]:
+                        if op in rule:
+                            right_rules = rule.split(op)
+                            if feature_name in right_rules[1]:
+                                processed_rules.append(
+                                    (("> " if op == "< " else ">= ") + right_rules[0]).replace(' ', ''))
+                            else:
+                                assert feature_name in right_rules[0]
+                                processed_rules.append((op + right_rules[1]).replace(' ', ''))
+                    rule_dict[feature_name] = processed_rules
+
+        explanation.append(
+            [{'rule': rule_dict, 'prediction': str(int(prediction)), 'confidence': best_exp.precision()}])
+
+    return index, explanation
+
+
+def compute_anchor_explanation(instances, model_wrapper, explainer, num_features, timesteps,
+                               background_feature_names):
+    """
+    Explain multiple instances using ANCHOR and reshape their importance values.
+
+    :param instances: The instances to explain, expected to be in the original shape (samples, timesteps, features).
+    :param model_wrapper: The model wrapper with a predict_proba function.
+    :param explainer: The LIME TabularExplainer object.
+    :param num_features: The number of features per timestep in the instance data.
+    :param timesteps: The number of timesteps in the instance data.
+    :param background_feature_names: .
+    :return: .
+    """
+    instances_shape = instances.shape
+    if len(instances_shape) == 3:
+        instances = instances.reshape(instances_shape[0], -1)
+        print("new instances.shape", instances.shape)
+
+    ordered_results = []
+    for index, instance in enumerate(instances):
+        # print("index", index)
+        _, reshaped_importance = compute_single_anchor_explanation(
+            index, instance, model_wrapper, explainer, num_features, timesteps, background_feature_names)
+        ordered_results.append(reshaped_importance)
+
+    # Combine the explanations into a single array
+    combined_explanations = np.array(ordered_results)
+    return combined_explanations
+
+
+def worker_init(model_path, num_features, timesteps,
+                flattened_background_data, flattened_feature_names, class_names,
+                worker_init_explainer_fn, worker_init_model_fn,
+                num_cores, gpu_idx):
+    worker_init_explainer_fn(model_path, num_features, timesteps,
+                             flattened_background_data, flattened_feature_names, class_names,
+                             num_cores, gpu_idx)
+    worker_init_model_fn(model_path, num_features, timesteps,
+                         flattened_background_data, flattened_feature_names, class_names,
+                         num_cores, gpu_idx)
+
+
+def compute_single_generic_explanation_parallel_helper(args):
+    """
+    Helper function to unpack arguments and call the actual function
+    that computes the explanation for a single instance.
+    """
+    # model_wrapper, explainer are global
+    index, instance, num_features, timesteps, flattened_feature_names, compute_single_generic_explanation_fn = args
+    _, reshaped_importance = compute_single_generic_explanation_fn(
+        index, instance, model_wrapper, explainer, num_features, timesteps, flattened_feature_names)
+
+    return reshaped_importance
+
+
+def compute_generic_explanation_parallel(instances,
+                                         model_path, num_features, timesteps,
+                                         flattened_background_data, flattened_feature_names, class_names,
+                                         worker_init_explainer_fn, worker_init_model_fn,
+                                         compute_single_generic_explanation_fn,
+                                         num_cores, gpu_idx):
+    """
+    Explain multiple instances using LIME in parallel and reshape their importance values.
+
+    :param instances: The instances to explain, expected to be in the original shape (samples, timesteps, features).
+    :param num_features: The number of features per timestep in the instance data.
+    :param timesteps: The number of timesteps in the instance data.
+    :param num_cores: The number of CPU cores to use for parallel computation.
+    :param gpu_idx: .
+
+    :return: A 3D array with explanations reshaped to original instance shapes (samples, timesteps, features).
+    """
+    instances_shape = instances.shape
+    if len(instances_shape) == 3:
+        instances = instances.reshape(instances_shape[0], -1)
+        print("new instances.shape", instances.shape)
+
+    # Set up multiprocessing pool with the specified number of workers
+    # and initialize each worker using the worker_init function
+
+    pool = Pool(processes=num_cores, initializer=worker_init, initargs=(
+        model_path, num_features, timesteps,
+        flattened_background_data, flattened_feature_names, class_names,
+        worker_init_explainer_fn, worker_init_model_fn,
+        num_cores, gpu_idx))
+
+    # Prepare arguments for parallel computation
+    args = [(i, instance, num_features, timesteps,
+             flattened_feature_names, compute_single_generic_explanation_fn
+             ) for i, instance in enumerate(instances)]
+
+    # Compute explanations in parallel
+    ordered_results = pool.map(compute_single_generic_explanation_parallel_helper, args)
+
+    # Shutdown the pool and free resources
+    pool.close()
+    pool.join()
+
+    # Combine the explanations into a single array
+    combined_explanations = np.array(ordered_results)
+    return combined_explanations
+
+
+def worker_init_anchor(model_path, num_features, timesteps,
+                       flattened_background_data, flattened_feature_names, class_names,
+                       num_cores, gpu_idx):
+    """
+    Initialize worker by loading the model into a global variable.
+    This function is called when each worker process starts.
+    """
+    global explainer
+    explainer = anchor_tabular.AnchorTabularExplainer(
+        train_data=flattened_background_data,
+        feature_names=flattened_feature_names,
+        class_names=[0, 1],
+    )
+    print("explainer initialised\n")
+
+### 07.03.2024: 16:50 ###

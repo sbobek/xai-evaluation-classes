@@ -7,6 +7,7 @@ import tensorflow as tf
 from anchor import anchor_tabular
 from lime.lime_tabular import LimeTabularExplainer
 from tensorflow.keras.models import load_model
+from tqdm import tqdm
 
 np.int = int  # Fix deprecated for LUX
 
@@ -269,8 +270,7 @@ def compute_anchor_explanation(instances, model_wrapper, explainer, num_features
         print("new instances.shape", instances.shape)
 
     ordered_results = []
-    for index, instance in enumerate(instances):
-        # print("index", index)
+    for index, instance in tqdm(enumerate(instances), total=len(instances)):
         _, reshaped_importance = compute_single_anchor_explanation(
             index, instance, model_wrapper, explainer, num_features, timesteps, background_feature_names)
         ordered_results.append(reshaped_importance)
@@ -368,4 +368,4 @@ def worker_init_anchor(model_path, num_features, timesteps,
     )
     print("explainer initialised\n")
 
-### 07.03.2024: 16:50 ###
+### 08.03.2024: 09:47 ###

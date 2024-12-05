@@ -15,7 +15,7 @@ import pandas as pd
 import torch
 from anchor import anchor_tabular
 from joblib import load
-from lux.lux.lux import LUX
+from lux.lux import LUX
 from scipy.spatial.distance import euclidean
 from scipy.stats import kstest, shapiro, skewnorm
 from sklearn import datasets
